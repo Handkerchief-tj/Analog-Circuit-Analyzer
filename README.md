@@ -1,8 +1,25 @@
 # 智能符号化模拟电路分析系统
 
-本分支用于在本地集成 **SLiCAP 5.2.1**、Web 原理图编辑器和独立的 SFG
-符号化简算法。系统把不同输入统一为规范化 `.cir` 网表，再分别执行数值分析与
-分频段符号化简。
+当前分支 `feature/desktop-slicap-shell` 正在实现 **PySide6 桌面版**，直接复用
+SLiCAP 5.2.1 官方原理图画布。原有 Web/FastAPI/Gradio 保留，但不再是本阶段主界面。
+系统把输入统一为规范化 `.cir`，分别执行 SLiCAP 数值分析和独立 SFG 算法的分频段符号化简。
+
+**当前是可从源码运行的桌面开发版，还不是无需 Python 的 EXE 安装发行版。**
+视觉模块按用户要求暂停测试，不属于当前验收范围；不加载视觉模型或大模型。
+
+## 桌面版快速开始
+
+在现有 `slicap5_env` 环境、此仓库根目录中运行：
+
+```powershell
+conda activate slicap5_env
+.\start-desktop.ps1
+```
+
+不需要同时运行 `start-local.ps1`，也不占用 5173、8000、7860 端口。
+新机器需先安装本仓库依赖与固定的 `sfg-prototype` wheel，参见后文环境安装。
+详细操作和验收边界见 [桌面使用说明](docs/desktop/usage.md) 与
+[桌面阶段进度](docs/desktop/progress.md)。
 
 ```text
 图片识别 IR（接口预留） ─┐
@@ -11,7 +28,7 @@ Web Schematic ───────────┤                    -> SFG 分
 官方 .slicap_sch ────────┘
 ```
 
-Web Schematic 使用浏览器原生 React 画布，但器件 SVG、引脚顺序、模型参数、
+以下 Web 说明用于兼容保留的旧入口。Web Schematic 使用浏览器原生 React 画布，但器件 SVG、引脚顺序、模型参数、
 `.slicap_sch` 持久化格式和 `.cir` 导出均以 SLiCAP 5.2.1 为权威来源。
 PySide6 仅由后端的官方 headless exporter 使用，不向浏览器传输桌面窗口。
 
@@ -19,6 +36,10 @@ PySide6 仅由后端的官方 headless exporter 使用，不向浏览器传输�
 
 | 模块 | 当前状态 |
 |---|---|
+| 官方桌面画布 | 直接继承 SLiCAP 5.2.1 MainWindow，不重画器件或引脚 |
+| 桌面后台任务 | QProcess 隔离，NDJSON 日志，取消和失败结果持久化 |
+| 桌面结果 | 本地 KaTeX、数值/噪声/MNA、小信号元件、分频段符号表达式与误差 |
+| EXE 安装发行版 | 未完成；standalone 构建与干净 Windows 验收仍待实施 |
 | `.cir` 规范化与严格参数解析 | 已实现；支持 `k/m/u/n/p` 和科学计数法 |
 | SLiCAP 5.2.1 数值分析 | 已实现；使用 `makeCircuit/doLaplace/doPZ/doMatrix/doNoise` |
 | SFG 算法接入 | 已实现；安装独立 `sfg-prototype` wheel 后可调用 |
@@ -43,6 +64,10 @@ PySide6 仅由后端的官方 headless exporter 使用，不向浏览器传输�
 
 ```text
 backend/isaca_api/                 FastAPI、统一数据模型、SLiCAP 适配层
+backend/isaca_desktop/             官方绘图壳层、输入面板、QProcess worker、结果界面
+start-desktop.ps1                  桌面开发版入口，不启动 Web 服务
+examples/desktop/                 RC 与 demo_2_numeric 网表
+docs/desktop/                    桌面使用与里程碑记录
 backend/tests/                     后端、参数、schematic 与官方 CLI 测试
 web-schematic/                     React + TypeScript + @xyflow/react 画布
 SLiCAP/                            兼容保留的旧 Gradio 页面
