@@ -91,7 +91,134 @@ def _json_value(value: Any) -> Any:
 
 
 def _result_fields(result: Any, fields: Iterable[str]) -> dict[str, Any]:
-    return {field: _json_value(getattr(result, field)) for field in fields if hasattr(result, field)}
+    """Serialize expressions and their TeX in the worker, not the GUI thread."""
+
+    values = {field: getattr(result, field) for field in fields if hasattr(result, field)}
+    serialized = {field: _json_value(value) for field, value in values.items()}
+    serialized["_latex"] = {
+        field: sp.latex(value) for field, value in values.items()
+        if isinstance(value, (sp.Basic, sp.MatrixBase))
+    }
+    return serialized
+
+
+def _subrange_record(item: Any) -> dict[str, Any]:
+    """Expose frequency-local results without serializing the whole graph object."""
+
+    transfer = _result_fields(item.transfer, (
+        "transfer", "numerator", "denominator", "success", "error", "vertex_count", "edge_count",
+    ))
+    for kind in ("poles", "zeros"):
+        transfer[kind] = [_result_fields(root, ("expression", "multiplicity", "exact", "polynomial_degree"))
+                          for root in getattr(item.transfer, kind)]
+    roots = [_result_fields(root, (
+        "kind", "category", "expression", "reference_frequency_hz", "frequency_hz", "relative_root_error",
+        "status", "method", "location", "parameters",
+    )) for root in item.target_root_approximations]
+    dominant = getattr(item, "dominant_term_transfer", None)
+    dominant_record = None
+    if dominant is not None:
+        dominant_record = _result_fields(dominant, (
+            "transfer", "numerator", "denominator", "full_term_count", "retained_term_count",
+            "discarded_parameters", "representation", "corner_count", "corner_max_norm_error",
+        ))
+        dominant_record["error"] = _result_fields(dominant.nominal_error, (
+            "max_relative_error", "max_magnitude_error_db", "max_phase_error_deg",
+        ))
+        dominant_record["parameter_influences"] = [_result_fields(parameter, (
+            "parameter", "max_normalized_sensitivity", "peak_frequency_hz",
+        )) for parameter in dominant.parameter_influences]
+    return {
+        "cluster_index": item.cluster_index,
+        "lower_frequency_hz": item.lower_frequency_hz,
+        "upper_frequency_hz": item.upper_frequency_hz,
+        "transfer": transfer,
+        "dominant_term_transfer": dominant_record,
+        "target_roots": roots,
+        "error": _result_fields(item.error, (
+            "max_relative_error", "max_magnitude_error_db", "max_phase_error_deg",
+        )),
+    }
+
+
+def _root_frequency_hz(value: Any) -> float | None:
+    """Return the absolute root frequency in hertz when it is finite."""
+
+    try:
+        frequency = abs(complex(value)) / (2.0 * 3.141592653589793)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return frequency if frequency > 0 and frequency < float("inf") else None
+
+
+def _bode_frequency_range(request: AnalysisRequest, pz: Any) -> tuple[float, float]:
+    """Choose a deterministic plot range from user input or computed roots."""
+
+    if request.frequency_range_hz is not None:
+        lower, upper = map(float, request.frequency_range_hz)
+        if lower <= 0 or upper <= lower:
+            raise SLiCAPAdapterError("frequency_range_hz must be a positive increasing pair.")
+        return lower, upper
+    poles = getattr(pz, "poles", None)
+    zeros = getattr(pz, "zeros", None)
+    roots = list(poles) if poles is not None else []
+    roots.extend(list(zeros) if zeros is not None else [])
+    frequencies = [item for item in (_root_frequency_hz(root) for root in roots) if item is not None]
+    if not frequencies:
+        return 1.0, 1.0e9
+    return max(min(frequencies) / 100.0, 1.0e-6), max(frequencies) * 100.0
+
+
+def _write_bode_artifact(
+    expression: Any,
+    output_path: Path,
+    frequency_range_hz: tuple[float, float],
+    points: int,
+) -> dict[str, Any]:
+    """Sample one numeric Laplace expression and save an offline SVG plot."""
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    frequencies = np.geomspace(frequency_range_hz[0], frequency_range_hz[1], points)
+    s = sp.Symbol("s")
+    try:
+        evaluator = sp.lambdify(s, sp.sympify(expression), modules="numpy")
+        values = np.asarray(evaluator(2j * np.pi * frequencies), dtype=complex)
+        if values.ndim == 0:
+            values = np.full(frequencies.shape, values, dtype=complex)
+        values = np.broadcast_to(values, frequencies.shape)
+    except Exception as error:
+        raise SLiCAPAdapterError(f"Cannot evaluate the transfer function for the Bode plot: {error}") from error
+    magnitude = 20.0 * np.log10(np.maximum(np.abs(values), np.finfo(float).tiny))
+    phase = np.unwrap(np.angle(values)) * 180.0 / np.pi
+    figure, axes = plt.subplots(2, 1, figsize=(8.0, 6.0), sharex=True, constrained_layout=True)
+    axes[0].semilogx(frequencies, magnitude, color="#185b86", linewidth=1.6)
+    axes[0].set_ylabel("Magnitude (dB)")
+    axes[0].grid(True, which="both", color="#d8d8d8", linewidth=0.5)
+    axes[1].semilogx(frequencies, phase, color="#185b86", linewidth=1.6)
+    axes[1].set_xlabel("Frequency (Hz)")
+    axes[1].set_ylabel("Phase (deg)")
+    axes[1].grid(True, which="both", color="#d8d8d8", linewidth=0.5)
+    figure.savefig(output_path, format="svg")
+    plt.close(figure)
+    sample_indices = np.unique(np.linspace(0, points - 1, min(points, 80), dtype=int))
+    return {
+        "frequency_range_hz": list(map(float, frequency_range_hz)),
+        "points": int(points),
+        "samples": [
+            {
+                "frequency_hz": float(frequencies[index]),
+                "magnitude_db": float(magnitude[index]),
+                "phase_deg": float(phase[index]),
+            }
+            for index in sample_indices
+        ],
+        "artifact": str(output_path),
+    }
 
 
 def _write_slicap_working_netlist(path: Path, text: str) -> tuple[str, int, bool]:
@@ -170,9 +297,12 @@ class SLiCAP521Adapter:
 
         document = self.prepare_document(request)
         substitutions, missing = numeric_substitutions(document.parameters)
-        numeric_modes = {"laplace", "pz", "matrix", "noise"}
-        if request.numeric and numeric_modes.intersection(request.modes) and missing:
+        numeric_modes = {"laplace", "pz", "matrix", "noise", "bode"}
+        if missing and ((request.numeric and numeric_modes.intersection(request.modes)) or "symbolic" in request.modes):
             raise MissingNumericParameters(missing)
+        errors = [item.message for item in document.diagnostics if item.level == "error"]
+        if errors:
+            raise SLiCAPAdapterError("; ".join(errors))
 
         project_dir = self.run_root / job_id
         cir_dir = project_dir / "cir"
@@ -194,6 +324,7 @@ class SLiCAP521Adapter:
             "circuit": document.model_dump(mode="json"),
             "analyses": {},
             "artifacts": {},
+            "diagnostics": [item.model_dump(mode="json") for item in document.diagnostics],
         }
         with _project_directory(project_dir):
             import SLiCAP as sl
@@ -209,13 +340,15 @@ class SLiCAP521Adapter:
             pardefs = {sp.Symbol(name): sp.Float(value) for name, value in substitutions.items()}
             numeric = bool(request.numeric)
 
-            if "laplace" in request.modes:
+            laplace = None
+            pz = None
+            if "laplace" in request.modes or "bode" in request.modes:
                 laplace = sl.doLaplace(circuit, pardefs=pardefs or None, numeric=numeric)
                 result["analyses"]["laplace"] = _result_fields(
                     laplace,
                     ("laplace", "numer", "denom", "DCvalue", "M", "Iv", "Dv"),
                 )
-            if "pz" in request.modes:
+            if "pz" in request.modes or "bode" in request.modes:
                 pz = sl.doPZ(circuit, pardefs=pardefs or None, numeric=numeric)
                 result["analyses"]["pz"] = _result_fields(
                     pz,
@@ -231,6 +364,18 @@ class SLiCAP521Adapter:
                     ("onoise", "inoise", "onoiseTerms", "inoiseTerms"),
                 )
 
+            if "bode" in request.modes:
+                if not numeric:
+                    raise SLiCAPAdapterError("Bode analysis requires numeric=True.")
+                bode_path = artifacts_dir / "bode.svg"
+                result["analyses"]["bode"] = _write_bode_artifact(
+                    getattr(laplace, "laplace"),
+                    bode_path,
+                    _bode_frequency_range(request, pz),
+                    request.bode_points,
+                )
+                result["artifacts"]["bode.svg"] = str(bode_path)
+
             if "symbolic" in request.modes:
                 result["analyses"]["symbolic"] = self._run_symbolic(
                     netlist_path,
@@ -238,13 +383,25 @@ class SLiCAP521Adapter:
                     request,
                     substitutions,
                 )
+                symbolic = result["analyses"]["symbolic"]
+                result["artifacts"].update(symbolic["reports"])
+                result["artifacts"].update(symbolic["graphs"])
+                for interval in symbolic["frequency_results"]:
+                    for root in interval["target_roots"]:
+                        if root.get("status") != "resolved":
+                            result["diagnostics"].append({
+                                "level": "warning", "code": "symbolic_root_not_accepted",
+                                "message": f"Cluster {interval['cluster_index']} {root.get('kind')}: "
+                                           f"{root.get('status')}; relative root error={root.get('relative_root_error')}. "
+                                           "A valid frequency response does not certify this local root expression.",
+                            })
 
         input_copy = artifacts_dir / "normalized.cir"
         input_copy.write_text(document.netlist_text, encoding="utf-8")
         result["artifacts"]["normalized.cir"] = str(input_copy)
         manifest = artifacts_dir / "result.json"
-        manifest.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         result["artifacts"]["result.json"] = str(manifest)
+        manifest.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
         return result
 
     def _run_symbolic(
@@ -275,6 +432,7 @@ class SLiCAP521Adapter:
             frequency_range_hz=request.frequency_range_hz,
             magnitude_error_db=request.magnitude_error_db,
             phase_error_deg=request.phase_error_deg,
+            max_steps_per_subrange=request.max_steps_per_subrange,
         )
         simplified = simplify_netlist(
             str(netlist_path),
@@ -288,6 +446,17 @@ class SLiCAP521Adapter:
             "error_trace.md": error_trace_report(simplified),
             "root_localization.md": root_localization_summary_report(simplified),
         }
+        graph_files: dict[str, str] = {}
+        original_dot = artifacts_dir / "sfg_original.dot"
+        original_dot.write_text(simplified.pipeline.graph.to_dot(), encoding="utf-8")
+        graph_files[original_dot.name] = str(original_dot)
+        final_dot = artifacts_dir / "sfg_final.dot"
+        final_dot.write_text(simplified.final_graph.to_dot(), encoding="utf-8")
+        graph_files[final_dot.name] = str(final_dot)
+        for item in simplified.subrange_results:
+            graph_path = artifacts_dir / f"sfg_cluster_{item.cluster_index}.dot"
+            graph_path.write_text(item.simplified_graph.to_dot(), encoding="utf-8")
+            graph_files[graph_path.name] = str(graph_path)
         paths: dict[str, str] = {}
         for name, content in reports.items():
             path = artifacts_dir / name
@@ -298,4 +467,9 @@ class SLiCAP521Adapter:
             "rejected_steps": len(simplified.rejected_steps),
             "subranges": len(simplified.subrange_results),
             "reports": paths,
+            "graphs": graph_files,
+            "frequency_results": [_subrange_record(item) for item in simplified.subrange_results],
+            "final_global_error": _result_fields(simplified.final_error, (
+                "max_relative_error", "max_magnitude_error_db", "max_phase_error_deg",
+            )),
         }

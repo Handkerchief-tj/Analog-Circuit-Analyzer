@@ -182,17 +182,18 @@ def collect_parameter_specs(
         except (TypeError, ValueError, SyntaxError, sp.SympifyError):
             continue
 
+    effective = {**definitions, **{name: str(value) for name, value in overrides.items()}}
     specs: list[ParameterSpec] = []
     for name in sorted(symbols):
         default_value = default_candidates[name][0][0] if default_candidates.get(name) else None
         if name in overrides:
             expression = str(overrides[name])
             source = ParameterSource.USER
-            numeric = _resolve_numeric(name, {**definitions, name: expression})
+            numeric = _resolve_numeric(name, effective)
         elif name in definitions:
             expression = definitions[name]
             source = ParameterSource.NETLIST
-            numeric = _resolve_numeric(name, definitions)
+            numeric = _resolve_numeric(name, effective)
         elif use_slicap_defaults and default_value is not None:
             expression = default_value
             source = ParameterSource.SLICAP_DEFAULT

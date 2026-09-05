@@ -5,7 +5,9 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+import math
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class DiagnosticLevel(StrEnum):
@@ -121,19 +123,29 @@ class SchematicConvertResponse(BaseModel):
 
 class AnalysisRequest(BaseModel):
     netlist_text: str
-    modes: list[Literal["laplace", "pz", "matrix", "noise", "symbolic"]] = Field(
+    modes: list[Literal["laplace", "pz", "matrix", "noise", "bode", "symbolic"]] = Field(
         default_factory=lambda: ["laplace", "pz"]
     )
     parameter_overrides: dict[str, str | float] = Field(default_factory=dict)
     use_slicap_defaults: bool = False
     numeric: bool = True
     frequency_range_hz: tuple[float, float] | None = None
-    magnitude_error_db: float = 2.0
-    phase_error_deg: float = 5.0
+    magnitude_error_db: float = Field(default=2.0, ge=0, allow_inf_nan=False)
+    phase_error_deg: float = Field(default=5.0, ge=0, allow_inf_nan=False)
+    bode_points: int = Field(default=300, ge=32, le=5000)
+    max_steps_per_subrange: int = Field(default=10, ge=0, le=100)
+
+    @field_validator("frequency_range_hz")
+    @classmethod
+    def validate_frequency_range(cls, value):
+        """Reject invalid ranges before launching an expensive analysis worker."""
+        if value is not None and (not all(math.isfinite(x) for x in value) or not 0 < value[0] < value[1]):
+            raise ValueError("frequency_range_hz must be a finite positive increasing pair")
+        return value
 
 
 class AnalysisJob(BaseModel):
     id: str
-    status: Literal["queued", "running", "completed", "failed"]
+    status: Literal["queued", "running", "completed", "failed", "cancelled"]
     result: dict[str, Any] | None = None
     error: str | None = None

@@ -21,3 +21,5 @@ artifacts/
 test-runs/
 /test-api-runs/
 /SLiCAP.ini
+/build/
+/dist/
