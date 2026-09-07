@@ -10,11 +10,6 @@ SLiCAP/analysis_bkup.py
 __pycache__/
 *.py[cod]
 .venv/
-node_modules/
-web-schematic/dist/
-web-schematic/*.tsbuildinfo
-web-schematic/vite.config.js
-web-schematic/vite.config.d.ts
 runs/
 artifacts/
 *.egg-info/

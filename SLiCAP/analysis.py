@@ -4,17 +4,10 @@ import subprocess
 import matplotlib.pyplot as plt
 import gradio as gr
 import datetime
-from pathlib import Path
 from dashscope import Generation
 from utils import read_file_content, get_latest_html, parse_slicap_to_markdown, clean_old_html, convert_pdf_to_png
 import matplotlib
 matplotlib.use('Agg')
-
-_BACKEND = Path(__file__).resolve().parents[1] / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-from isaca_api.parameters import collect_parameter_specs, numeric_substitutions
 
 def save_backend_log(netlist, laplace_md, matrix_md, noise_md, bode_mag_path, bode_phs_path, llm_result, analysis_types):
     """恢复后台静默日志留存功能"""
@@ -57,24 +50,10 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
                 gr.update(visible=False),
                 "⚠️ 分析失败：未提供网表或未勾选分析项！", None)
 
-    overrides = {
-        str(row[0]).strip(): str(row[1]).strip()
-        for row in (param_df_data or [])
-        if row and len(row) > 1 and str(row[0]).strip() and str(row[1]).strip()
-    }
-    _, missing = numeric_substitutions(
-        collect_parameter_specs(ui_netlist_text, overrides=overrides)
-    )
-    if missing:
-        message = "⚠️ 数值分析缺少参数：" + ", ".join(missing)
-        return (gr.update(visible=False), gr.update(visible=False),
-                gr.update(visible=False), gr.update(visible=False),
-                gr.update(visible=False), message, None)
-
     # 1. 组装最终仿真网表
     final_netlist_lines = ui_netlist_text.strip().split('\n')
-    if overrides:
-        param_str = ".param " + " ".join(f"{name}={value}" for name, value in overrides.items())
+    if param_df_data:
+        param_str = ".param " + " ".join([f"{row[0]}={row[1]}" for row in param_df_data if row[0]])
         if final_netlist_lines[-1].strip().lower() == '.end':
             final_netlist_lines.insert(-1, param_str)
         else:

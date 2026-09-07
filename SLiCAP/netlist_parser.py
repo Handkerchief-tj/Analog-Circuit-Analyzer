@@ -1,13 +1,4 @@
 import re
-import sys
-from pathlib import Path
-
-_BACKEND = Path(__file__).resolve().parents[1] / "backend"
-if str(_BACKEND) not in sys.path:
-    sys.path.insert(0, str(_BACKEND))
-
-from isaca_api.models import ParameterSource
-from isaca_api.parameters import collect_parameter_specs
 
 # 全局支持的参数配置
 MOS_PARAMS = ["cgs", "cgb", "cdg", "cdb", "csb", "gm", "gb", "go"]
@@ -16,8 +7,15 @@ MOS_PARAMS = ["cgs", "cgb", "cdg", "cdb", "csb", "gm", "gb", "go"]
 # ...保留你之前头部的 MOS_PARAMS 等代码...
 
 def update_param_df(netlist_text, current_param_df):
-    """扫描符号参数并保留来源值，未赋值项保持为空。"""
+    """智能扫描网表中的 {xxx} 参数，并生成赋值表格"""
     if not netlist_text:
+        return []
+
+    # 提取所有大括号里的参数名
+    matches = re.findall(r'\{([^}]+)\}', netlist_text)
+    unique_params = sorted(list(set(matches)))
+
+    if not unique_params:
         return []
 
     # 保存用户当前已经输入的值（防止网表每次刷新把用户的赋值清空）
@@ -28,16 +26,10 @@ def update_param_df(netlist_text, current_param_df):
                 val_map[str(row[0])] = str(row[1])
 
     new_rows = []
-    for spec in collect_parameter_specs(netlist_text):
-        if spec.source == ParameterSource.INLINE:
-            continue
-        if spec.name in val_map:
-            value = val_map[spec.name]
-        elif spec.source in {ParameterSource.NETLIST, ParameterSource.SLICAP_DEFAULT}:
-            value = spec.expression
-        else:
-            value = ""
-        new_rows.append([spec.name, value])
+    for p in unique_params:
+        # 如果用户之前输入过值，保留；否则默认给个 "1"
+        val = val_map.get(p, "1")
+        new_rows.append([p, val])
 
     return new_rows
 

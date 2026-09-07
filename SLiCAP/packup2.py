@@ -2,8 +2,7 @@ import gradio as gr
 from netlist_parser import sync_text_to_df, sync_df_to_text, update_param_df, MOS_PARAMS
 from analysis import run_my_analysis
 
-DEFAULT_NETLIST = """"Common source amplifier"
-Vdd Vdd 0 V dc={Vdd} value=0
+DEFAULT_NETLIST = """Vdd Vdd 0 V dc={Vdd} value=0
 Vin in 0 V value={Vin} 
 
 Rd Vdd out R value={Rd} noisetemp={T}
@@ -219,17 +218,6 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
     help_md = gr.Markdown(value=HELP_TEXT, visible=False, label="帮助文档")
 
     gr.Markdown("### 📸 第一步：输入电路图与网表生成")
-    with gr.Accordion("✏️ Web Schematic 电路绘制器", open=False):
-        gr.HTML("""
-        <div style="padding: 12px 4px 16px; color: #475569;">
-          使用 SLiCAP 5.2.1 器件目录绘制电路，支持导出 <code>.cir</code>、
-          <code>.slicap_sch</code> 并提交数值或 SFG 符号分析。
-          如果嵌入页未加载，请
-          <a href="http://127.0.0.1:5173" target="_blank">在独立窗口打开</a>。
-        </div>
-        <iframe src="http://127.0.0.1:5173" title="ISACA Web Schematic"
-          style="width:100%;height:760px;border:1px solid #cbd5e1;border-radius:10px;background:#eef3f1;"></iframe>
-        """)
     with gr.Row():
         with gr.Column(scale=1):
             img_input = gr.Image(sources=["upload", "webcam"], type="filepath", label="1. 拍摄或上传")
