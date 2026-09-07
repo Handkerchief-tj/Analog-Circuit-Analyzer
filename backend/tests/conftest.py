@@ -84,4 +84,3 @@ def rc_schematic() -> SchematicDocument:
         parameters={"R": "1k", "C": "1u"},
         analysis=AnalysisPorts(source="V1", detector="V_out"),
     )
-
