@@ -4,7 +4,8 @@
 
 ## 冻结基线
 
-- 集成仓库：`731729513ef7daa6eef795e974e9dd34fd38a270`，从 `feature/slicap-5-web-schematic` 建立 `feature/desktop-slicap-shell`。
+- 集成仓库：从早期 Web 实验分支建立 `feature/desktop-slicap-shell`；已弃用的 React
+  Web Schematic 不进入桌面版最终文件，绘图只使用 SLiCAP 官方画布。
 - 独立算法：分支 `slicap-5.2-integration`，当前开发 wheel 为 `sfg-prototype 0.2.3`。
 - 开发环境：Python 3.12、SLiCAP 5.2.1；旧 SLiCAP 4.0.8 环境保持不动。
 - 算法回归：52 项通过，0 failure/0 error/0 skip，JUnit 记录在 `runs/desktop-sfg-regression.xml`。
@@ -42,6 +43,7 @@
 核心回归与 demo 的最新数值以对应 JUnit/verification.json 为准，不以历史聊天中的计数替代。
 当前后端/桌面回归为 **38 passed / 1 skipped**，已覆盖参数候选、方向键、可读传函、Hz 根表与频段图；
 跳过项仍仅为用户暂停的视觉校对测试。
+当前 `slicap-5.2-integration` 算法分支扩展后为 **60 passed**。
 RC 在 offscreen 与 Windows 原生 Qt 平台均完成保存、官方网表导出、取消后重启、数值及 Bode 分析；
 原生窗口检查到 2 个实际 KaTeX 公式，极点为 -1000 rad/s。
 最后一轮新增导出输入哈希检查、运行中输入锁定和持久化日志后，再次通过完整回归。

@@ -13,7 +13,8 @@ Input adapters
        -> public SLiCAP numeric analyses
        -> versioned sfg-prototype wheel
   -> AnalysisJob + artifacts
-  -> FastAPI -> React / Gradio
+  -> QProcess worker -> PySide6 desktop results
+  -> FastAPI (future website integration boundary)
 ```
 
 ## 并发边界
@@ -30,11 +31,7 @@ SLiCAP 当前具有解析器和项目配置的全局状态。`SLiCAP521Adapter` 
 
 ## Schematic 边界
 
-官方 `.slicap_sch` 是 schematic 的规范持久化格式。React 画布使用
-`SchematicDocument` 作为临时视图模型，但导出和分析前必须转换为官方 JSON。
-器件 SVG、引脚坐标、参数和引用来自 SLiCAP `SymbolLibrary`，`.cir` 由
-`python -m SLiCAP.schematic.cli netlist` 生成。未知官方字段按只读 passthrough
-保留，避免往返保存时无声丢失未来版本数据。
-
-PySide6 只存在于服务端：官方 CLI 在 offscreen `QApplication` 中加载 scene 并
-执行连通性与网表生成。浏览器不会运行或远程显示 Qt 桌面窗口。
+官方 `.slicap_sch` 是 schematic 的规范持久化格式。桌面程序直接继承 SLiCAP
+5.2.1 `MainWindow` 并复用 `CanvasPanel`、符号库、引脚、导线和参数编辑功能，
+不再维护自定义浏览器画布。保存后的 schematic 在隔离 worker 中调用官方加载与
+网表导出逻辑生成 `.cir`；该 `.cir` 才是数值和 SFG 分析的权威输入。

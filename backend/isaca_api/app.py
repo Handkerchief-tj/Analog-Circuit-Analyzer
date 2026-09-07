@@ -43,14 +43,19 @@ def create_app(run_root: str | Path | None = None) -> FastAPI:
         description="Unified local API for SLiCAP 5.2.1 and SFG symbolic simplification.",
         lifespan=lifespan,
     )
-    api.add_middleware(
-        CORSMiddleware,
-        allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-        allow_origin_regex=r"^http://(?:127\.0\.0\.1|localhost):\d+$",
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+    cors_origins = [
+        origin.strip()
+        for origin in os.environ.get("ISACA_CORS_ORIGINS", "").split(",")
+        if origin.strip()
+    ]
+    if cors_origins:
+        api.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     api.state.job_manager = manager
 
     @api.get("/api/v1/health")
