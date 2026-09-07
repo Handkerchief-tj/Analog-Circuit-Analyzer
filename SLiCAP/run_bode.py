@@ -5,6 +5,9 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import SLiCAP as sl
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+os.chdir(BASE_DIR)
+
 # 强制创建必要目录
 os.makedirs("./cir", exist_ok=True)
 os.makedirs("./html/css", exist_ok=True)

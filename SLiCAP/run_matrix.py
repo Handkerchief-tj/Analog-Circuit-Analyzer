@@ -1,5 +1,10 @@
 import SLiCAP as sl
 import shutil
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+import os
+os.chdir(BASE_DIR)
 
 #创建slicap项目
 sl.initProject("nmos common source")

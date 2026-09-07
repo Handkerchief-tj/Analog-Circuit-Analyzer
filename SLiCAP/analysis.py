@@ -6,16 +6,27 @@ import gradio as gr
 import datetime
 from dashscope import Generation
 from utils import read_file_content, get_latest_html, parse_slicap_to_markdown, clean_old_html, convert_pdf_to_png
+from sfg_bridge import run_sfg_symbolic_simplification
+from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
 
-def save_backend_log(netlist, laplace_md, matrix_md, noise_md, bode_mag_path, bode_phs_path, llm_result, analysis_types):
+SECTION_NUMERALS = ["一", "二", "三", "四", "五", "六", "七", "八", "九", "十"]
+BASE_DIR = Path(__file__).resolve().parent
+
+
+def _section_title(index, title):
+    numeral = SECTION_NUMERALS[index - 1] if 1 <= index <= len(SECTION_NUMERALS) else str(index)
+    return f"### {numeral}、 {title}"
+
+
+def save_backend_log(netlist, laplace_md, matrix_md, noise_md, symbolic_md, bode_mag_path, bode_phs_path, llm_result, analysis_types):
     """恢复后台静默日志留存功能"""
-    log_dir = "./backend_logs"
+    log_dir = BASE_DIR / "backend_logs"
     os.makedirs(log_dir, exist_ok=True)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_file = os.path.join(log_dir, f"log_{timestamp}.md")
+    log_file = log_dir / f"log_{timestamp}.md"
 
     content = f"# 自动化分析日志 - {timestamp}\n"
     content += f"**勾选的分析类型**: {', '.join(analysis_types)}\n\n"
@@ -23,10 +34,11 @@ def save_backend_log(netlist, laplace_md, matrix_md, noise_md, bode_mag_path, bo
     content += f"## 2. 提取的拉普拉斯公式\n{laplace_md if laplace_md else '*未执行或提取失败*'}\n\n"
     content += f"## 3. 提取的矩阵方程\n{matrix_md if matrix_md else '*未执行或提取失败*'}\n\n"
     content += f"## 4. 提取的噪声分析\n{noise_md if noise_md else '*未执行或提取失败*'}\n\n"
-    content += f"## 5. 波特图状态\n"
+    content += f"## 5. SFG 符号化简\n{symbolic_md if symbolic_md else '*未执行或提取失败*'}\n\n"
+    content += f"## 6. 波特图状态\n"
     content += f"- 幅度图: {'✅ 成功生成' if bode_mag_path else '❌ 未生成'}\n"
     content += f"- 相位图: {'✅ 成功生成' if bode_phs_path else '❌ 未生成'}\n\n"
-    content += f"## 6. 大模型深度分析报告\n{llm_result}\n"
+    content += f"## 7. 大模型深度分析报告\n{llm_result}\n"
 
     try:
         with open(log_file, "w", encoding="utf-8") as f:
@@ -38,17 +50,18 @@ def save_backend_log(netlist, laplace_md, matrix_md, noise_md, bode_mag_path, bo
 
 def find_pdf_path(filename):
     """寻找 SLiCAP 生成的 PDF 文件"""
-    if os.path.exists(f"./img/{filename}"): return f"./img/{filename}"
-    if os.path.exists(f"./html/img/{filename}"): return f"./html/img/{filename}"
+    if (BASE_DIR / "img" / filename).exists(): return str(BASE_DIR / "img" / filename)
+    if (BASE_DIR / "html" / "img" / filename).exists(): return str(BASE_DIR / "html" / "img" / filename)
     return None
 
 
 def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, stop_f, points):
     if not ui_netlist_text or not analysis_types:
-        return (gr.update(visible=False), gr.update(visible=False),
-                gr.update(visible=False), gr.update(visible=False),
-                gr.update(visible=False),
-                "⚠️ 分析失败：未提供网表或未勾选分析项！", None)
+        return (
+            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+            gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
+            gr.update(visible=False), "⚠️ 分析失败：未提供网表或未勾选分析项！", None,
+        )
 
     # 1. 组装最终仿真网表
     final_netlist_lines = ui_netlist_text.strip().split('\n')
@@ -62,63 +75,77 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
 
     final_netlist = "\n".join(final_netlist_lines)
 
-    os.makedirs("./cir", exist_ok=True)
-    with open("./cir/circuit.cir", "w", encoding="utf-8") as f:
+    cir_dir = BASE_DIR / "cir"
+    html_dir = BASE_DIR / "html"
+    img_dir = BASE_DIR / "img"
+    os.makedirs(cir_dir, exist_ok=True)
+    with open(cir_dir / "circuit.cir", "w", encoding="utf-8") as f:
         f.write(final_netlist)
 
     md_laplace, md_matrix, md_noise, llm_context = "", "", "", ""
+    md_symbolic = ""
+    symbolic_graph_html = ""
     svg_mag, svg_phs = None, None
     path_mag, path_phs = None, None
-    os.makedirs("./html", exist_ok=True)
-    os.makedirs("./img", exist_ok=True)
+    os.makedirs(html_dir, exist_ok=True)
+    os.makedirs(img_dir, exist_ok=True)
 
     is_laplace = "拉普拉斯分析" in analysis_types
     is_matrix = "矩阵方程分析" in analysis_types
     is_noise = "噪声分析" in analysis_types
+    is_symbolic = "SFG 符号化简" in analysis_types
     is_bode = "波特图绘制" in analysis_types
 
     # --- 执行拉普拉斯 ---
     if is_laplace:
-        clean_old_html("./html", "Laplace-Transfer.html")
-        res = subprocess.run([sys.executable, "run_laplace.py"], capture_output=True, text=True, encoding="utf-8")
+        clean_old_html(str(html_dir), "Laplace-Transfer.html")
+        res = subprocess.run([sys.executable, "run_laplace.py"], cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8")
         if res.returncode != 0: print(f"❌ [拉普拉斯报错]: {res.stderr}")
 
-        latest_lap = get_latest_html("./html", "Laplace-Transfer.html")
+        latest_lap = get_latest_html(str(html_dir), "Laplace-Transfer.html")
         if latest_lap:
             md_laplace = parse_slicap_to_markdown(read_file_content(latest_lap))
             llm_context += f"--- 传递函数 ---\n{md_laplace}\n\n"
 
     # --- 执行矩阵 ---
     if is_matrix:
-        clean_old_html("./html", "Matrix-Equations.html")
-        res = subprocess.run([sys.executable, "run_matrix.py"], capture_output=True, text=True, encoding="utf-8")
+        clean_old_html(str(html_dir), "Matrix-Equations.html")
+        res = subprocess.run([sys.executable, "run_matrix.py"], cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8")
         if res.returncode != 0: print(f"❌ [矩阵报错]: {res.stderr}")
 
-        latest_mat = get_latest_html("./html", "Matrix-Equations.html")
+        latest_mat = get_latest_html(str(html_dir), "Matrix-Equations.html")
         if latest_mat:
             md_matrix = parse_slicap_to_markdown(read_file_content(latest_mat))
             llm_context += f"--- 矩阵方程 ---\n{md_matrix}\n\n"
 
     # --- 执行噪声分析 ---
     if is_noise:
-        clean_old_html("./html", "Noise-Analysis.html")
-        res = subprocess.run([sys.executable, "run_noise.py"], capture_output=True, text=True, encoding="utf-8")
+        clean_old_html(str(html_dir), "Noise-Analysis.html")
+        res = subprocess.run([sys.executable, "run_noise.py"], cwd=str(BASE_DIR), capture_output=True, text=True, encoding="utf-8")
         if res.returncode != 0:
             print(f"❌ [噪声报错]: {res.stderr}")
 
-        latest_noise = get_latest_html("./html", "Noise-Analysis.html")
+        latest_noise = get_latest_html(str(html_dir), "Noise-Analysis.html")
         if latest_noise:
             md_noise = parse_slicap_to_markdown(read_file_content(latest_noise))
             llm_context += f"--- 噪声分析 ---\n{md_noise}\n\n"
 
+    # --- 执行 SFG 符号化简 ---
+    if is_symbolic:
+        symbolic_result = run_sfg_symbolic_simplification(final_netlist, param_df_data, start_f, stop_f, points)
+        md_symbolic = symbolic_result.get("markdown", "")
+        symbolic_graph_html = symbolic_result.get("graph_html", "")
+        llm_context += f"--- SFG 符号化简 ---\n{md_symbolic}\n\n"
+
     # --- 执行波特图 ---
     if is_bode:
         # 清除旧文件（防干扰）
-        for p in ["./img/f_dBm.pdf", "./img/f_dBm.png", "./img/f_phs.pdf", "./img/f_phs.png"]:
-            if os.path.exists(p): os.remove(p)
+        for p in [img_dir / "f_dBm.pdf", img_dir / "f_dBm.png", img_dir / "f_phs.pdf", img_dir / "f_phs.png"]:
+            if p.exists():
+                p.unlink()
 
-        res = subprocess.run([sys.executable, "run_bode.py", str(start_f), str(stop_f), str(points)],
-                             capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        res = subprocess.run([sys.executable, "run_bode.py", str(start_f), str(stop_f), str(points)], cwd=str(BASE_DIR),
+                              capture_output=True, text=True, encoding="utf-8", errors="ignore")
         if res.returncode != 0:
             print(f"❌ [波特图报错]: {res.stderr}")
             png_mag, png_phs = None, None
@@ -135,18 +162,21 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
     # --- 调用大模型 ---
     llm_analysis_result = ""
     if llm_context.strip():
-        expected_sections = ["### 一、 电路拓扑与基础分析\n（必须使用 Markdown 表格归纳）"]
+        expected_sections = [_section_title(1, "电路拓扑与基础分析") + "\n（必须使用 Markdown 表格归纳）"]
         section_index = 2
         if is_laplace:
-            expected_sections.append(f"### {['一', '二', '三', '四', '五'][section_index - 1]}、 拉普拉斯传递函数")
+            expected_sections.append(_section_title(section_index, "拉普拉斯传递函数"))
             section_index += 1
         if is_matrix:
-            expected_sections.append(f"### {['一', '二', '三', '四', '五'][section_index - 1]}、 节点电压矩阵方程")
+            expected_sections.append(_section_title(section_index, "节点电压矩阵方程"))
             section_index += 1
         if is_noise:
-            expected_sections.append(f"### {['一', '二', '三', '四', '五'][section_index - 1]}、 噪声分析")
+            expected_sections.append(_section_title(section_index, "噪声分析"))
             section_index += 1
-        expected_sections.append(f"### {['一', '二', '三', '四', '五'][section_index - 1]}、 综合性能评估")
+        if is_symbolic:
+            expected_sections.append(_section_title(section_index, "SFG 符号化简"))
+            section_index += 1
+        expected_sections.append(_section_title(section_index, "综合性能评估"))
 
         messages = [
             {'role': 'system',
@@ -172,7 +202,7 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
         llm_analysis_result = "未勾选公式类分析或提取失败，跳过大模型文字分析。"
 
     # --- 核心：保存后台日志 ---
-    save_backend_log(final_netlist, md_laplace, md_matrix, md_noise, png_mag, png_phs, llm_analysis_result, analysis_types)
+    save_backend_log(final_netlist, md_laplace, md_matrix, md_noise, md_symbolic, png_mag, png_phs, llm_analysis_result, analysis_types)
 
     fig = plt.figure(figsize=(1, 1));
     plt.axis("off");
@@ -183,6 +213,8 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
         gr.update(value=md_laplace, visible=is_laplace),
         gr.update(value=md_matrix, visible=is_matrix),
         gr.update(value=md_noise, visible=is_noise),
+        gr.update(value=md_symbolic, visible=is_symbolic),
+        gr.update(value=symbolic_graph_html, visible=bool(symbolic_graph_html)),
         gr.update(value=png_mag, visible=bool(png_mag)),
         gr.update(value=png_phs, visible=bool(png_phs)),
         llm_analysis_result, fig

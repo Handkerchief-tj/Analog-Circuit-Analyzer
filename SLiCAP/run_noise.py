@@ -1,4 +1,9 @@
 import SLiCAP as sl
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+import os
+os.chdir(BASE_DIR)
 
 sl.initProject("Noise Analysis")
 sl.ini.disp = 0

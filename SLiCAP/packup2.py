@@ -1,6 +1,15 @@
 import gradio as gr
 from netlist_parser import sync_text_to_df, sync_df_to_text, update_param_df, MOS_PARAMS
 from analysis import run_my_analysis
+from schematic_bridge import (
+    catalog_markdown,
+    default_schematic_document,
+    document_from_tables,
+    document_to_tables,
+    export_netlist_from_document,
+    import_slicap_schematic_text,
+    render_document_svg,
+)
 
 DEFAULT_NETLIST = """Vdd Vdd 0 V dc={Vdd} value=0
 Vin in 0 V value={Vin} 
@@ -23,6 +32,7 @@ HELP_TEXT = """# 📖 使用说明与网表语法指南
 ### 第一步：输入电路图与网表
 - **方式 A**：拍摄或上传电路图片，点击"识别图片提取网表"（功能预留中，暂不可用）
 - **方式 B**：在下方文本框中直接输入或粘贴 SPICE 网表（推荐）
+- **方式 C**：在下方“原理图编辑”里直接改元件和连线，再一键导出网表
 
 ### 第二步：配置元件参数
 - **A 区**：勾选 MOS 管小信号参数（gm、cgs、cdg 等），系统会自动将对应参数插入网表
@@ -36,6 +46,7 @@ HELP_TEXT = """# 📖 使用说明与网表语法指南
 | 拉普拉斯分析 | 推导传递函数 H(s)，计算零极点 |
 | 矩阵方程分析 | 列写节点电压矩阵方程（MNA） |
 | 噪声分析 | 计算各器件噪声贡献及总输出噪声谱 |
+| SFG 符号化简 | 使用 ISACA Desktop 的信号流图算法做分频段化简 |
 | 波特图绘制 | 绘制幅频 / 相频响应曲线 |
 
 点击 **开始综合分析** 执行。
@@ -188,9 +199,10 @@ R4 4 0 R value={R_b}
 3. `.source` 的值必须与网表中某个独立电压源的名称一致
 4. 注释行以 `*` 开头
 5. 波特图扫频参数为选填，默认 0.001Hz ~ 1MHz、200 个点
-6. 图片识别（第一步）为功能预留状态，当前建议直接输入网表
-7. 大模型深度分析需要配置 API Key（环境变量 `DASHSCOPE_API_KEY`）
-8. 使用 `.model` 时，续行以 `+` 开头
+6. SFG 符号化简依赖网表中的 `.source` 和 `.detector`
+7. 图片识别（第一步）为功能预留状态，当前建议直接输入网表
+8. 大模型深度分析需要配置 API Key（环境变量 `DASHSCOPE_API_KEY`）
+9. 使用 `.model` 时，续行以 `+` 开头
 
 ---
 
@@ -208,6 +220,11 @@ A: 目前暂未开放参数扫描功能，可通过修改 B 区数值后重新�
 **Q: 为什么波特图没有曲线？**
 A: 检查是否勾选了"波特图绘制"，以及网表是否包含完整的 .source 和 .detector。"""
 
+try:
+    _DEFAULT_SCHEMATIC_COMPONENTS, _DEFAULT_SCHEMATIC_WIRES = document_to_tables(default_schematic_document())
+except Exception:
+    _DEFAULT_SCHEMATIC_COMPONENTS, _DEFAULT_SCHEMATIC_WIRES = [], []
+
 with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo:
     with gr.Row():
         with gr.Column(scale=4):
@@ -216,6 +233,47 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
             help_btn = gr.Button("📖 帮助", size="sm", variant="secondary")
 
     help_md = gr.Markdown(value=HELP_TEXT, visible=False, label="帮助文档")
+
+    gr.Markdown("### 📐 原理图编辑（网页版）")
+    gr.Markdown("这里是轻量版 `.slicap_sch` 编辑器：能看、能改元件和连线，并导出成网表接入现有分析流程。")
+    with gr.Row():
+        with gr.Column(scale=1):
+            schematic_file = gr.File(label="导入 .slicap_sch / JSON", file_types=[".slicap_sch", ".json"])
+            schematic_title = gr.Textbox(label="原理图标题", value="Web Schematic")
+            schematic_source = gr.Textbox(label=".source", value="V1")
+            schematic_detector = gr.Textbox(label=".detector", value="V_out")
+        with gr.Column(scale=2):
+            schematic_preview = gr.HTML(label="原理图预览")
+            schematic_status = gr.Markdown(value="已加载默认示例原理图。")
+    with gr.Row():
+        schematic_components = gr.Dataframe(
+            value=_DEFAULT_SCHEMATIC_COMPONENTS,
+            headers=["id", "refdes", "device", "x", "y", "rotation", "model", "parameters", "control_ref", "name"],
+            datatype=["str", "str", "str", "number", "number", "number", "str", "str", "str", "str"],
+            type="array",
+            interactive=True,
+            row_count=(1, "dynamic"),
+            col_count=(10, "fixed"),
+            label="元件",
+        )
+        schematic_wires = gr.Dataframe(
+            value=_DEFAULT_SCHEMATIC_WIRES,
+            headers=["id", "source_component_id", "source_pin", "target_component_id", "target_pin", "net_name", "waypoints_json"],
+            datatype=["str", "str", "str", "str", "str", "str", "str"],
+            type="array",
+            interactive=True,
+            row_count=(1, "dynamic"),
+            col_count=(7, "fixed"),
+            label="连线",
+        )
+    with gr.Row():
+        btn_load_schematic = gr.Button("从文件载入原理图")
+        btn_render_schematic = gr.Button("刷新预览")
+        btn_export_schematic = gr.Button("导出网表到分析框", variant="primary")
+
+    schematic_catalog = gr.Accordion("支持器件引脚", open=False)
+    with schematic_catalog:
+        gr.Markdown(catalog_markdown())
 
     gr.Markdown("### 📸 第一步：输入电路图与网表生成")
     with gr.Row():
@@ -250,7 +308,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
     gr.Markdown("### 🚀 第三步：选择分析类型并执行")
     with gr.Row():
         analysis_selector = gr.CheckboxGroup(
-            choices=["拉普拉斯分析", "矩阵方程分析", "噪声分析", "波特图绘制"],
+            choices=["拉普拉斯分析", "矩阵方程分析", "噪声分析", "SFG 符号化简", "波特图绘制"],
             value=["拉普拉斯分析", "波特图绘制"],
             label="请勾选需要运行的独立模块", interactive=True
         )
@@ -286,6 +344,13 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
         {"left": r"\(", "right": r"\)", "display": False},
         {"left": "\\[", "right": "\\]", "display": False}
     ])
+    out_symbolic = gr.Markdown(visible=False, label="SFG 符号化简", latex_delimiters=[
+        {"left": "$$", "right": "$$", "display": True},
+        {"left": "$", "right": "$", "display": False},
+        {"left": r"\(", "right": r"\)", "display": False},
+        {"left": "\\[", "right": "\\]", "display": False}
+    ])
+    out_symbolic_graph = gr.HTML(visible=False)
 
     # 采用原生的 gr.Image 接收 PNG，既不会卡死浏览器，右上角又自带全屏放大与下载按钮
     with gr.Row():
@@ -304,8 +369,71 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
     )
     res_fig = gr.Plot(visible=False)
 
+    def _load_schematic(file_path):
+        if not file_path:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "未选择文件。"
+        path = getattr(file_path, "name", file_path)
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                document, notes = import_slicap_schematic_text(handle.read())
+        except Exception as exc:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), f"无法载入原理图：{exc}"
+        if document is None:
+            return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), "\n".join(notes)
+        components, wires = document_to_tables(document)
+        return (
+            components,
+            wires,
+            render_document_svg(document),
+            document.title,
+            getattr(document.analysis, "source", "") or "",
+            getattr(document.analysis, "detector", "") or "",
+            "\n".join(notes) if notes else "原理图已载入。",
+        )
+
+    def _render_schematic(components, wires, title, source, detector):
+        document, notes = document_from_tables(components, wires, title, source, detector)
+        if document is None:
+            return gr.update(), "\n".join(notes)
+        return render_document_svg(document), "\n".join(notes) if notes else "原理图预览已刷新。"
+
+    def _export_schematic_netlist(components, wires, title, source, detector):
+        document, notes = document_from_tables(components, wires, title, source, detector)
+        if document is None:
+            return gr.update(), "\n".join(notes)
+        netlist, export_notes = export_netlist_from_document(document)
+        message_lines = [line for line in [*notes, *export_notes] if line]
+        if netlist is None:
+            return gr.update(), "\n".join(message_lines)
+        return netlist, "\n".join(message_lines) if message_lines else "已导出为网表。"
+
     # ---------------- 事件绑定 ----------------
     btn_img_to_netlist.click(fn=lambda x: DEFAULT_NETLIST, inputs=[img_input], outputs=[circuit_text])
+    btn_load_schematic.click(
+        fn=_load_schematic,
+        inputs=[schematic_file],
+        outputs=[schematic_components, schematic_wires, schematic_preview, schematic_title, schematic_source, schematic_detector, schematic_status],
+    )
+    btn_render_schematic.click(
+        fn=_render_schematic,
+        inputs=[schematic_components, schematic_wires, schematic_title, schematic_source, schematic_detector],
+        outputs=[schematic_preview, schematic_status],
+    )
+    btn_export_schematic.click(
+        fn=_export_schematic_netlist,
+        inputs=[schematic_components, schematic_wires, schematic_title, schematic_source, schematic_detector],
+        outputs=[circuit_text, schematic_status],
+    )
+    schematic_components.change(
+        fn=_render_schematic,
+        inputs=[schematic_components, schematic_wires, schematic_title, schematic_source, schematic_detector],
+        outputs=[schematic_preview, schematic_status],
+    )
+    schematic_wires.change(
+        fn=_render_schematic,
+        inputs=[schematic_components, schematic_wires, schematic_title, schematic_source, schematic_detector],
+        outputs=[schematic_preview, schematic_status],
+    )
     circuit_text.change(fn=sync_text_to_df, inputs=[circuit_text, mos_df], outputs=[mos_df])
     circuit_text.change(fn=update_param_df, inputs=[circuit_text, param_df], outputs=[param_df])
     mos_df.change(fn=sync_df_to_text, inputs=[mos_df, circuit_text], outputs=[circuit_text])
@@ -313,7 +441,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
     btn_analyze.click(
         fn=run_my_analysis,
         inputs=[circuit_text, param_df, analysis_selector, sweep_start, sweep_stop, sweep_points],
-        outputs=[out_laplace, out_matrix, out_noise, out_bode_mag, out_bode_phs, res_markdown, res_fig]
+        outputs=[out_laplace, out_matrix, out_noise, out_symbolic, out_symbolic_graph, out_bode_mag, out_bode_phs, res_markdown, res_fig]
     )
 
     # ---------------- 帮助文档展开/收起 ----------------
