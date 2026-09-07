@@ -59,9 +59,22 @@ def main() -> int:
         if args.case == "demo_2_numeric":
             import sympy as sp
             assert len(symbolic["frequency_results"]) == 4
-            cmu, gx, cx, cpi = sp.symbols("cmu gx cx cpi")
+            cmu, gx, cx, cpi, gm, gpi, Cl = sp.symbols("cmu gx cx cpi gm gpi Cl")
             equation_24 = -cmu * gx / (cx * (cmu + cpi))
+            equation_22 = -(gm * cmu + (gx + gpi) * (cmu + cx + Cl)) / (
+                (cmu + cpi) * (cmu + cx + Cl)
+            )
             roots = [root for interval in symbolic["frequency_results"] for root in interval["target_roots"]]
+            assert len(roots) == 5
+            assert all(root.get("status") == "resolved" for root in roots), roots
+            cluster_two_poles = [
+                root
+                for root in symbolic["frequency_results"][1]["target_roots"]
+                if root.get("kind") == "pole"
+            ]
+            assert len(cluster_two_poles) == 1
+            assert sp.simplify(sp.sympify(cluster_two_poles[0]["expression"]) - equation_22) == 0
+            assert float(cluster_two_poles[0]["relative_root_error"]) > 0.3
             assert any(root.get("expression") and sp.simplify(sp.sympify(root["expression"]) - equation_24) == 0
                        for root in roots if root.get("kind") == "zero")
     summary = {

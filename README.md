@@ -96,7 +96,7 @@ SFG 算法 wheel 由独立仓库构建：
 ```powershell
 cd C:\pr\learning\college\else\sitp_2\github\Intelligent-Symbolic-Analog-Circuit-Analyzer
 python -m build sfg_prototype
-pip install --force-reinstall --no-deps .\sfg_prototype\dist\sfg_prototype-0.2.0-py3-none-any.whl
+pip install --force-reinstall --no-deps .\sfg_prototype\dist\sfg_prototype-0.2.3-py3-none-any.whl
 ```
 
 ## 本地运行
@@ -189,8 +189,8 @@ python .\scripts\run-circuit-regression.py `
 - 当前 junction 和导线折点可从官方文件导入并保留；浏览器首版通过 junction
   元素和自动正交路由建立分支，尚未提供拖拽任意折点的专用工具。
 - SFG 算法对 `demo_2_numeric` 已能生成分频段解释；部分高阶局部闭环根仍可能
-  返回较长表达式或 `outside_error_limit`，不能描述为已达到任意复杂电路的论文级
-  最简形式。
+  返回较长表达式或 `unresolved`，不能描述为已达到任意复杂电路的论文级最简形式。
+  默认按论文 Eq. (6)-(7) 验收整个频段的传递性能，逐根位置偏差仅作为诊断显示。
 - 旧 Gradio 结果展示仍保留部分旧实现；新功能应优先通过 FastAPI 结构化结果读取，
   后续再逐页替换旧逻辑。
 - 视觉模型和多用户服务器部署不在本阶段验收范围内。

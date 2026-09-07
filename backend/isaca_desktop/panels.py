@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from isaca_api.models import CircuitDocument
+from .parameter_ui import configure_spreadsheet_table
 
 
 class _LineNumberArea(QWidget):
@@ -235,7 +236,7 @@ class AnalysisSetupDock(QDockWidget):
         modes_layout = QVBoxLayout(modes)
         self.mode_checks: dict[str, QCheckBox] = {}
         for key, title, checked in (
-            ("laplace", "拉普拉斯传递函数", True),
+            ("laplace", "小信号增益 H(s) / 拉普拉斯传递函数", True),
             ("pz", "极点与零点", True),
             ("matrix", "MNA 矩阵", False),
             ("noise", "噪声分析", False),
@@ -249,8 +250,12 @@ class AnalysisSetupDock(QDockWidget):
         self.numeric = QCheckBox("执行数值分析")
         self.numeric.setChecked(True)
         modes_layout.addWidget(self.numeric)
-        self.use_defaults = QCheckBox("显式使用 SLiCAP 5.2.1 器件默认值")
+        self.use_defaults = QCheckBox("用器件默认值补齐未赋值的符号参数")
         self.use_defaults.setChecked(False)
+        self.use_defaults.setToolTip(
+            "器件属性留空时，官方导出器会省略该字段，SLiCAP 模型仍可能采用非零默认值。\n"
+            "本开关只用于补齐已经写入器件表达式、但尚未由 .param 赋值的符号。"
+        )
         modes_layout.addWidget(self.use_defaults)
         outer.addWidget(modes)
 
@@ -258,8 +263,14 @@ class AnalysisSetupDock(QDockWidget):
         options_form = QFormLayout(options)
         self.f_min = QLineEdit()
         self.f_max = QLineEdit()
-        self.f_min.setPlaceholderText("自动")
-        self.f_max.setPlaceholderText("自动")
+        self.f_min.setPlaceholderText("自动（按根外推）")
+        self.f_max.setPlaceholderText("自动（按根外推）")
+        frequency_tip = (
+            "两项留空时，程序根据计算出的零极点自动确定分析范围。\n"
+            "若要复现论文单管示例，请分别填写 10 和 1e11 Hz。"
+        )
+        self.f_min.setToolTip(frequency_tip)
+        self.f_max.setToolTip(frequency_tip)
         self.mag_error = QDoubleSpinBox()
         self.mag_error.setRange(0.0, 100.0)
         self.mag_error.setValue(2.0)
@@ -285,7 +296,15 @@ class AnalysisSetupDock(QDockWidget):
         self.parameter_table = QTableWidget(0, 4)
         self.parameter_table.setHorizontalHeaderLabels(["参数", "表达式", "数值", "来源"])
         self.parameter_table.setMinimumHeight(150)
+        self._parameter_delegate = configure_spreadsheet_table(self.parameter_table)
         outer.addWidget(QLabel("参数与来源"))
+        parameter_hint = QLabel(
+            "建议先在器件 Properties 中用符号引用小信号参数，再在 Place > Parameters 中赋值。"
+            "留空字段不一定等于 0，而是采用对应 SLiCAP 模型的默认值。"
+        )
+        parameter_hint.setWordWrap(True)
+        parameter_hint.setStyleSheet("color: #666;")
+        outer.addWidget(parameter_hint)
         outer.addWidget(self.parameter_table, 1)
 
         buttons = QHBoxLayout()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import locale
+import math
 import os
 import threading
 from contextlib import contextmanager
@@ -102,19 +103,228 @@ def _result_fields(result: Any, fields: Iterable[str]) -> dict[str, Any]:
     return serialized
 
 
-def _subrange_record(item: Any) -> dict[str, Any]:
-    """Expose frequency-local results without serializing the whole graph object."""
+def _evaluate_symbolic(value: Any, substitutions: dict[str, float] | None = None) -> complex | None:
+    """Evaluate a symbolic presentation value without changing its exact form."""
 
-    transfer = _result_fields(item.transfer, (
+    try:
+        expression = sp.sympify(value)
+        values = {sp.Symbol(name): number for name, number in (substitutions or {}).items()}
+        evaluated = complex(sp.N(expression.subs(values)))
+    except (TypeError, ValueError, OverflowError, sp.SympifyError):
+        return None
+    if not math.isfinite(evaluated.real) or not math.isfinite(evaluated.imag):
+        return None
+    return evaluated
+
+
+def _root_record(value: Any) -> dict[str, Any]:
+    """Describe one numeric s-plane root in both rad/s and hertz."""
+
+    root = _evaluate_symbolic(value)
+    if root is None:
+        return {"root": _json_value(value), "frequency_hz": None}
+    scale = max(1.0, abs(root))
+    if root.real < -1e-10 * scale:
+        half_plane = "LHP"
+    elif root.real > 1e-10 * scale:
+        half_plane = "RHP"
+    else:
+        half_plane = "imaginary axis"
+    return {
+        "root": _json_value(value),
+        "real_rad_s": root.real,
+        "imag_rad_s": root.imag,
+        "angular_frequency_rad_s": abs(root),
+        "frequency_hz": abs(root) / (2.0 * math.pi),
+        "half_plane": half_plane,
+    }
+
+
+def _root_cluster_record(cluster: Any) -> dict[str, Any]:
+    """Serialize one closed-loop root cluster for the desktop frequency map."""
+
+    roots = []
+    for sample in getattr(cluster, "roots", ()):
+        record = _root_record(getattr(sample, "value", None))
+        record["kind"] = getattr(sample, "kind", "root")
+        roots.append(record)
+    return {
+        "index": getattr(cluster, "index", None),
+        "center_frequency_hz": getattr(cluster, "center_frequency_hz", None),
+        "min_frequency_hz": getattr(cluster, "min_magnitude", 0.0) / (2.0 * math.pi),
+        "max_frequency_hz": getattr(cluster, "max_magnitude", 0.0) / (2.0 * math.pi),
+        "pole_count": getattr(cluster, "pole_count", 0),
+        "zero_count": getattr(cluster, "zero_count", 0),
+        "roots": roots,
+    }
+
+
+def _root_values(result: Any, field: str) -> list[Any]:
+    """Convert SLiCAP list/tuple/NumPy root containers without truth testing."""
+
+    values = getattr(result, field, None) if result is not None else None
+    return list(values) if values is not None else []
+
+
+def _tex_number(value: float) -> str:
+    """Format one real number as compact engineering-friendly TeX."""
+
+    if value == 0:
+        return "0"
+    exponent = int(math.floor(math.log10(abs(value))))
+    if -2 <= exponent <= 3:
+        return f"{value:.5g}"
+    mantissa = value / 10.0**exponent
+    return f"{mantissa:.5g}\\times 10^{{{exponent}}}"
+
+
+def _normalized_factors(roots: Iterable[Any]) -> list[str] | None:
+    """Build real first/second-order factors from numeric roots."""
+
+    values: list[complex] = []
+    for value in roots:
+        root = _evaluate_symbolic(value)
+        if root is None or abs(root) == 0:
+            return None
+        values.append(root)
+    factors: list[str] = []
+    used: set[int] = set()
+    for index, root in enumerate(values):
+        if index in used:
+            continue
+        tolerance = 1e-7 * max(1.0, abs(root))
+        if abs(root.imag) <= tolerance:
+            sign = "+" if root.real < 0 else "-"
+            factors.append(rf"\left(1 {sign} \frac{{s}}{{{_tex_number(abs(root.real))}}}\right)")
+            used.add(index)
+            continue
+        mate = next(
+            (
+                candidate for candidate in range(index + 1, len(values))
+                if candidate not in used
+                and abs(values[candidate] - root.conjugate()) <= tolerance
+            ),
+            None,
+        )
+        if mate is None:
+            return None
+        omega = abs(root)
+        zeta = -root.real / omega
+        middle_sign = "+" if zeta >= 0 else "-"
+        factors.append(
+            rf"\left[1 {middle_sign} {_tex_number(abs(2.0 * zeta))}"
+            rf"\frac{{s}}{{{_tex_number(omega)}}}"
+            rf" + \left(\frac{{s}}{{{_tex_number(omega)}}}\right)^2\right]"
+        )
+        used.update((index, mate))
+    return factors
+
+
+def _transfer_presentation(laplace: Any, pz: Any | None) -> dict[str, Any]:
+    """Create readable views of an exact SLiCAP transfer result."""
+
+    expression = getattr(laplace, "laplace", None)
+    record: dict[str, Any] = {}
+    if expression is not None:
+        compact = sp.factor_terms(sp.cancel(sp.sympify(expression)))
+        record["compact"] = _json_value(compact)
+        record.setdefault("_latex", {})["compact"] = sp.latex(compact)
+    dc_value = getattr(pz or laplace, "DCvalue", None)
+    dc_numeric = _evaluate_symbolic(dc_value)
+    if dc_value is not None:
+        record["dc_gain"] = _json_value(dc_value)
+        if isinstance(dc_value, sp.Basic):
+            record.setdefault("_latex", {})["dc_gain"] = sp.latex(dc_value)
+    if dc_numeric is not None:
+        record["dc_gain_magnitude"] = abs(dc_numeric)
+        record["dc_gain_db"] = 20.0 * math.log10(abs(dc_numeric)) if abs(dc_numeric) else None
+        record["dc_gain_phase_deg"] = math.degrees(math.atan2(dc_numeric.imag, dc_numeric.real))
+    poles = _root_values(pz, "poles")
+    zeros = _root_values(pz, "zeros")
+    numerator_factors = _normalized_factors(zeros)
+    denominator_factors = _normalized_factors(poles)
+    if dc_numeric is not None and numerator_factors is not None and denominator_factors is not None:
+        if abs(dc_numeric.imag) <= 1e-12 * max(1.0, abs(dc_numeric)):
+            gain_tex = _tex_number(dc_numeric.real)
+        else:
+            gain_tex = rf"\left({_tex_number(dc_numeric.real)}+j{_tex_number(dc_numeric.imag)}\right)"
+        numerator = " ".join(numerator_factors) or "1"
+        denominator = " ".join(denominator_factors) or "1"
+        record["normalized"] = "H(s) = H(0) times normalized pole-zero factors"
+        record.setdefault("_latex", {})["normalized"] = (
+            rf"H(s) \approx {gain_tex}\,\frac{{{numerator}}}{{{denominator}}}"
+        )
+    return record
+
+
+def _frequency_response_record(
+    expression: Any,
+    lower_frequency_hz: float,
+    upper_frequency_hz: float,
+    substitutions: dict[str, float] | None,
+) -> dict[str, Any] | None:
+    """Evaluate one frequency-local transfer at its geometric center."""
+
+    if lower_frequency_hz <= 0 or upper_frequency_hz <= 0:
+        return None
+    frequency = math.sqrt(lower_frequency_hz * upper_frequency_hz)
+    values = {sp.Symbol(name): number for name, number in (substitutions or {}).items()}
+    values[sp.Symbol("s")] = 2j * math.pi * frequency
+    try:
+        response = complex(sp.N(sp.sympify(expression).subs(values)))
+    except (TypeError, ValueError, OverflowError, sp.SympifyError):
+        return None
+    if not math.isfinite(response.real) or not math.isfinite(response.imag):
+        return None
+    magnitude = abs(response)
+    return {
+        "frequency_hz": frequency,
+        "value": _json_value(response),
+        "magnitude": magnitude,
+        "magnitude_db": 20.0 * math.log10(magnitude) if magnitude else None,
+        "phase_deg": math.degrees(math.atan2(response.imag, response.real)),
+    }
+
+
+def _symbolic_transfer_record(
+    transfer_result: Any,
+    substitutions: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
+    """Serialize one local symbolic transfer and its evaluated roots."""
+
+    if transfer_result is None:
+        return None
+    transfer = _result_fields(transfer_result, (
         "transfer", "numerator", "denominator", "success", "error", "vertex_count", "edge_count",
     ))
     for kind in ("poles", "zeros"):
-        transfer[kind] = [_result_fields(root, ("expression", "multiplicity", "exact", "polynomial_degree"))
-                          for root in getattr(item.transfer, kind)]
-    roots = [_result_fields(root, (
-        "kind", "category", "expression", "reference_frequency_hz", "frequency_hz", "relative_root_error",
-        "status", "method", "location", "parameters",
-    )) for root in item.target_root_approximations]
+        transfer[kind] = []
+        for root in getattr(transfer_result, kind, ()):
+            root_record = _result_fields(root, ("expression", "multiplicity", "exact", "polynomial_degree"))
+            evaluated = _evaluate_symbolic(getattr(root, "expression", None), substitutions)
+            root_record["numeric_value"] = _json_value(evaluated) if evaluated is not None else None
+            root_record["frequency_hz"] = abs(evaluated) / (2.0 * math.pi) if evaluated is not None else None
+            transfer[kind].append(root_record)
+    return transfer
+
+
+def _subrange_record(item: Any, substitutions: dict[str, float] | None = None) -> dict[str, Any]:
+    """Expose frequency-local results without serializing the whole graph object."""
+
+    transfer = _symbolic_transfer_record(item.transfer, substitutions) or {}
+    paper_style_transfer = _symbolic_transfer_record(
+        getattr(item, "paper_style_transfer", None), substitutions
+    )
+    roots = []
+    for root in item.target_root_approximations:
+        root_record = _result_fields(root, (
+            "kind", "category", "expression", "reference_frequency_hz", "frequency_hz", "relative_root_error",
+            "status", "method", "location", "parameters",
+        ))
+        evaluated = _evaluate_symbolic(getattr(root, "expression", None), substitutions)
+        root_record["numeric_value"] = _json_value(evaluated) if evaluated is not None else None
+        root_record["evaluated_frequency_hz"] = abs(evaluated) / (2.0 * math.pi) if evaluated is not None else None
+        roots.append(root_record)
     dominant = getattr(item, "dominant_term_transfer", None)
     dominant_record = None
     if dominant is not None:
@@ -133,7 +343,14 @@ def _subrange_record(item: Any) -> dict[str, Any]:
         "lower_frequency_hz": item.lower_frequency_hz,
         "upper_frequency_hz": item.upper_frequency_hz,
         "transfer": transfer,
+        "evaluation": _frequency_response_record(
+            getattr(item.transfer, "transfer", None),
+            item.lower_frequency_hz,
+            item.upper_frequency_hz,
+            substitutions,
+        ),
         "dominant_term_transfer": dominant_record,
+        "paper_style_transfer": paper_style_transfer,
         "target_roots": roots,
         "error": _result_fields(item.error, (
             "max_relative_error", "max_magnitude_error_db", "max_phase_error_deg",
@@ -350,10 +567,17 @@ class SLiCAP521Adapter:
                 )
             if "pz" in request.modes or "bode" in request.modes:
                 pz = sl.doPZ(circuit, pardefs=pardefs or None, numeric=numeric)
-                result["analyses"]["pz"] = _result_fields(
+                pz_record = _result_fields(
                     pz,
                     ("poles", "zeros", "DCvalue", "laplace", "numer", "denom"),
                 )
+                pz_record["pole_records"] = [_root_record(root) for root in _root_values(pz, "poles")]
+                pz_record["zero_records"] = [_root_record(root) for root in _root_values(pz, "zeros")]
+                result["analyses"]["pz"] = pz_record
+            if laplace is not None:
+                result["analyses"]["laplace"]["presentation"] = _transfer_presentation(laplace, pz)
+            elif pz is not None:
+                result["analyses"]["pz"]["presentation"] = _transfer_presentation(pz, pz)
             if "matrix" in request.modes:
                 matrix = sl.doMatrix(circuit, pardefs=pardefs or None, numeric=numeric)
                 result["analyses"]["matrix"] = _result_fields(matrix, ("M", "Iv", "Dv"))
@@ -390,10 +614,10 @@ class SLiCAP521Adapter:
                     for root in interval["target_roots"]:
                         if root.get("status") != "resolved":
                             result["diagnostics"].append({
-                                "level": "warning", "code": "symbolic_root_not_accepted",
+                                "level": "warning", "code": "symbolic_root_unresolved",
                                 "message": f"Cluster {interval['cluster_index']} {root.get('kind')}: "
-                                           f"{root.get('status')}; relative root error={root.get('relative_root_error')}. "
-                                           "A valid frequency response does not certify this local root expression.",
+                                           f"{root.get('status')}; root-location deviation={root.get('relative_root_error')}. "
+                                           "No local symbolic explanation was found; subrange transfer acceptance is reported separately.",
                             })
 
         input_copy = artifacts_dir / "normalized.cir"
@@ -466,9 +690,12 @@ class SLiCAP521Adapter:
             "accepted_steps": len(simplified.accepted_steps),
             "rejected_steps": len(simplified.rejected_steps),
             "subranges": len(simplified.subrange_results),
+            "root_clusters": [
+                _root_cluster_record(cluster) for cluster in simplified.pipeline.clusters
+            ],
             "reports": paths,
             "graphs": graph_files,
-            "frequency_results": [_subrange_record(item) for item in simplified.subrange_results],
+            "frequency_results": [_subrange_record(item, substitutions) for item in simplified.subrange_results],
             "final_global_error": _result_fields(simplified.final_error, (
                 "max_relative_error", "max_magnitude_error_db", "max_phase_error_deg",
             )),

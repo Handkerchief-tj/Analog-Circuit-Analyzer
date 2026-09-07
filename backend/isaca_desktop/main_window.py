@@ -15,6 +15,7 @@ from isaca_api.models import AnalysisRequest, DiagnosticLevel, NormalizeRequest
 from isaca_api.netlist import normalize_netlist
 
 from .panels import AnalysisSetupDock, NetlistEditor, ProjectInputDock, TaskLogDock
+from .parameter_ui import install_slicap_parameter_dialog_enhancement
 from .paths import create_project_layout, ensure_user_directories
 from .process import WorkerController
 from .results import ResultTabs
@@ -27,6 +28,7 @@ class IsacaMainWindow(SLiCAPMainWindow):
     def __init__(self, project_root: str | Path | None = None, file: str | Path | None = None):
         self.desktop_adapter = SLiCAPDesktopAdapter()
         super().__init__(config="slicap", schematic_only=True)
+        install_slicap_parameter_dialog_enhancement(self._active_components)
         self.setWindowTitle("ISACA - Intelligent Symbolic Analog Circuit Analyzer")
         self.resize(1560, 940)
         self.settings = QSettings("ISACA", "ISACA Desktop")
@@ -66,6 +68,18 @@ class IsacaMainWindow(SLiCAPMainWindow):
         if file is not None:
             self.open_input(Path(file))
         self.statusBar().showMessage("请创建或打开项目。" if self.project_root is None else "就绪")
+
+    def _active_components(self) -> list[Any]:
+        """Return components from the active official scene for parameter suggestions."""
+
+        panel = self.desktop_adapter.active_panel(self)
+        scene = getattr(panel, "_scene", None)
+        if scene is None:
+            return []
+        return [
+            item for item in scene.items()
+            if hasattr(item, "instance_id") and hasattr(item, "params")
+        ]
 
     def _connect_signals(self) -> None:
         """Connect custom panels without modifying official SLiCAP classes."""

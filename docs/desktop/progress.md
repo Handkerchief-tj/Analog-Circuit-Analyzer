@@ -5,7 +5,7 @@
 ## 冻结基线
 
 - 集成仓库：`731729513ef7daa6eef795e974e9dd34fd38a270`，从 `feature/slicap-5-web-schematic` 建立 `feature/desktop-slicap-shell`。
-- 独立算法：`0800212e91d80b319c8189cc0abf8fbed65db2e0`，分支 `slicap-5.2-integration`，使用 `sfg-prototype 0.2.0` wheel。
+- 独立算法：分支 `slicap-5.2-integration`，当前开发 wheel 为 `sfg-prototype 0.2.3`。
 - 开发环境：Python 3.12、SLiCAP 5.2.1；旧 SLiCAP 4.0.8 环境保持不动。
 - 算法回归：52 项通过，0 failure/0 error/0 skip，JUnit 记录在 `runs/desktop-sfg-regression.xml`。
 
@@ -40,7 +40,8 @@
 ## 验证记录
 
 核心回归与 demo 的最新数值以对应 JUnit/verification.json 为准，不以历史聊天中的计数替代。
-当前后端/桌面回归为 **32 passed / 1 skipped**，跳过的是用户暂停的视觉校对测试。
+当前后端/桌面回归为 **38 passed / 1 skipped**，已覆盖参数候选、方向键、可读传函、Hz 根表与频段图；
+跳过项仍仅为用户暂停的视觉校对测试。
 RC 在 offscreen 与 Windows 原生 Qt 平台均完成保存、官方网表导出、取消后重启、数值及 Bode 分析；
 原生窗口检查到 2 个实际 KaTeX 公式，极点为 -1000 rad/s。
 最后一轮新增导出输入哈希检查、运行中输入锁定和持久化日志后，再次通过完整回归。
@@ -61,13 +62,18 @@ RC 在 offscreen 与 Windows 原生 Qt 平台均完成保存、官方网表导�
 
 四个子图在算法的频率采样检查中均处于 ±2 dB、±5° 范围内。恢复了 `gm/cmu`、
 Eq.(24) `-cmu*gx/(cx*(cmu+cpi))` 和输入极点 `-(Gin+gx)/cx` 的符号形式。
-但 **第二频段局部极点解释误差约 36.49%，状态为 outside_error_limit**；
-第一频段的已解析根形式仍然很长。这说明“桌面集成可运行”和“所有根都达到论文可读性”是两项不同的验收。
-本次不放宽根误差门限，不伪造论文形式，也不在集成仓库里修改算法源码来掩盖该问题。
-该限制同时进入 GUI 警告和结构化 diagnostics，后续在独立算法仓库调查候选选择与表达式可读性。
-最终 worker 复验用时约 194.7 秒，Eq.(24) 通过 SymPy 符号等价断言，warning 被保留。
-结构化证据位于 `runs/desktop-demo2-20260905-final/verification.json`；精简、可入库的记录见
-`verification-2026-09-05.json`。
+第二频段现在保留论文 Eq. (22) 的求和点极点，约为 `-47.7 kHz`。它相对精确闭环
+极点约 `-34.6 kHz` 的根位置偏差约为 `36.9%`，但该频段化简图的最大传函误差约为
+`0.059 dB`、`4.19 deg`，满足用户设置的 `±2 dB`、`±5 deg`。因此默认论文模式将
+该根标为“已定位”，而不是用额外 5% 逐根门槛否决它。代码不再回到原始 SFG 为
+满足根误差而重选表达式；逐根位置限制仅作为用户显式开启的可选扩展。
+5 个目标根均获得符号解释，Eq. (22) 和 Eq. (24) 均通过 SymPy 符号等价断言。
+小图默认先枚举完整的 `RSP/RR` 候选，再由论文 Eq. (6)-(7) 与 Eq. (11)-(12)
+决定接受和排序；`demo_2_numeric` 的 meta-edge 数低于自动上限，因此不再使用固定贡献阈值预先丢弃候选。
+开环极点的反馈遮蔽边界也已改为论文所述的 `|loop gain| >= 1`，并写入验证配置。
+当前唯一 warning 是尚未配置私有 Graphviz，不影响数值与符号计算。精简且可入库的结构化证据见
+`verification-2026-09-07.json`；本次完整本地证据位于临时验证目录的
+`isaca-demo2-paper-default-final-20260907/verification.json`。
 
 ## 下一阶段与验收边界
 

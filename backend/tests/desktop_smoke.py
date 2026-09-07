@@ -44,6 +44,8 @@ def main(root: Path) -> int:
         if action != "analysis":
             return
         state["pole"] = float(result["analyses"]["pz"]["poles"][0])
+        state["pole_frequency_hz"] = result["analyses"]["pz"]["pole_records"][0]["frequency_hz"]
+        state["normalized_transfer"] = result["analyses"]["laplace"]["presentation"].get("normalized")
         state["svg_exists"] = Path(result["analyses"]["bode"]["artifact"]).is_file()
         window.results.setCurrentIndex(2)
         QTimer.singleShot(500, check_formula)
