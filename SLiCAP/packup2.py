@@ -283,6 +283,12 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
         with gr.Column(scale=1):
             circuit_text = gr.Textbox(lines=12, label="2. 可编辑电路网表", value=DEFAULT_NETLIST, interactive=True)
 
+    with gr.Accordion("SFG 误差设置", open=False):
+        with gr.Row():
+            sfg_rel_err_pct = gr.Number(value=5.0, label="相对误差上限 (%)")
+            sfg_mag_err_db = gr.Number(value=2.0, label="幅值误差上限 (dB)")
+            sfg_phase_err_deg = gr.Number(value=5.0, label="相位误差上限 (deg)")
+
     gr.Markdown("---")
 
     gr.Markdown("### ⚙️ 第二步：元件参数提取与赋值配置")
@@ -440,7 +446,7 @@ with gr.Blocks(theme=gr.themes.Soft(), title="智能电路分析系统") as demo
 
     btn_analyze.click(
         fn=run_my_analysis,
-        inputs=[circuit_text, param_df, analysis_selector, sweep_start, sweep_stop, sweep_points],
+        inputs=[circuit_text, param_df, analysis_selector, sweep_start, sweep_stop, sweep_points, sfg_rel_err_pct, sfg_mag_err_db, sfg_phase_err_deg],
         outputs=[out_laplace, out_matrix, out_noise, out_symbolic, out_symbolic_graph, out_bode_mag, out_bode_phs, res_markdown, res_fig]
     )
 

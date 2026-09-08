@@ -55,7 +55,7 @@ def find_pdf_path(filename):
     return None
 
 
-def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, stop_f, points):
+def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, stop_f, points, sfg_rel_err_pct=5.0, sfg_mag_err_db=2.0, sfg_phase_err_deg=5.0):
     if not ui_netlist_text or not analysis_types:
         return (
             gr.update(visible=False), gr.update(visible=False), gr.update(visible=False),
@@ -132,7 +132,16 @@ def run_my_analysis(ui_netlist_text, param_df_data, analysis_types, start_f, sto
 
     # --- 执行 SFG 符号化简 ---
     if is_symbolic:
-        symbolic_result = run_sfg_symbolic_simplification(final_netlist, param_df_data, start_f, stop_f, points)
+        symbolic_result = run_sfg_symbolic_simplification(
+            final_netlist,
+            param_df_data,
+            start_f,
+            stop_f,
+            points,
+            relative_error_pct=sfg_rel_err_pct,
+            magnitude_error_db=sfg_mag_err_db,
+            phase_error_deg=sfg_phase_err_deg,
+        )
         md_symbolic = symbolic_result.get("markdown", "")
         symbolic_graph_html = symbolic_result.get("graph_html", "")
         llm_context += f"--- SFG 符号化简 ---\n{md_symbolic}\n\n"
