@@ -53,9 +53,13 @@ def _format_frequency(hz: float | None) -> str:
     if math.isinf(hz):
         return "∞"
     omega = 2 * math.pi * hz
-    for scale, suffix in ((1e9, "GHz"), (1e6, "MHz"), (1e3, "kHz")):
+    for scale, suffix, omega_suffix in (
+        (1e9, "GHz", "Grad/s"),
+        (1e6, "MHz", "Mrad/s"),
+        (1e3, "kHz", "krad/s"),
+    ):
         if abs(hz) >= scale:
-            return f"{hz / scale:.6g} {suffix} (ω={omega / scale:.6g} {suffix}/rad)"
+            return f"{hz / scale:.6g} {suffix} (ω={omega / scale:.6g} {omega_suffix})"
     return f"{hz:.6g} Hz (ω={omega:.6g} rad/s)"
 
 
@@ -90,21 +94,42 @@ def _parameter_summary(dominant_term_transfer: Any | None) -> str:
     return ", ".join(preview)
 
 
-def _root_table(title: str, roots: tuple[Any, ...]) -> str:
+def _target_root_table(roots: tuple[Any, ...]) -> str:
     rows: list[list[str]] = []
     for index, root in enumerate(roots, start=1):
-        expr = root.expression if getattr(root, "expression", None) is not None else getattr(root, "numeric_value", None)
-        frequency = _format_frequency(getattr(root, "frequency_hz", None))
-        plane = _root_plane(getattr(root, "numeric_value", None))
+        kind = "极点" if getattr(root, "kind", "") == "pole" else "零点"
+        expression = getattr(root, "expression", None)
+        reference_value = getattr(root, "reference_value", None)
+        numeric_value = getattr(root, "numeric_value", None)
+        deviation = getattr(root, "relative_root_error", None)
+        status = "已解析" if getattr(root, "status", "") == "resolved" else "未解析"
         rows.append([
-            f"{title}{index}",
-            _latex_inline(expr) if expr is not None else "-",
-            frequency,
-            plane,
+            f"{kind}{getattr(root, 'root_index', index)}",
+            _latex_inline(expression) if expression is not None else "-",
+            _format_frequency(getattr(root, "reference_frequency_hz", None)),
+            _format_frequency(getattr(root, "frequency_hz", None)),
+            _root_plane(reference_value if reference_value is not None else numeric_value),
+            status,
+            "-" if deviation is None else f"{100 * float(deviation):.4g}%",
         ])
     if not rows:
-        return f"**{title}**\n\n- none"
-    return f"**{title}**\n\n{_table(['根', '符号表达式', '数值频率', '半平面'], rows)}"
+        return "**本频段目标零极点**\n\n- 本频段没有闭环目标根。"
+    return "**本频段目标零极点**\n\n" + _table(
+        ["目标根", "符号表达式", "精确数值频率", "符号式求值频率", "半平面", "状态", "根位置偏差（诊断）"],
+        rows,
+    )
+
+
+def _selected_subrange_error(item: Any) -> Any:
+    dominant = getattr(item, "dominant_term_transfer", None)
+    return dominant.nominal_error if dominant is not None else item.error
+
+
+def _passes_bode_limits(error: Any, magnitude_limit_db: float, phase_limit_deg: float) -> bool:
+    return (
+        float(error.max_magnitude_error_db) <= magnitude_limit_db
+        and float(error.max_phase_error_deg) <= phase_limit_deg
+    )
 
 
 def _analysis_details(result: Any) -> str:
@@ -136,11 +161,31 @@ def run_sfg_symbolic_simplification(
     start_f: float | None = None,
     stop_f: float | None = None,
     points: int | None = None,
-    relative_error_pct: float = 5.0,
     magnitude_error_db: float = 2.0,
     phase_error_deg: float = 5.0,
     max_steps_per_subrange: int = 10,
 ) -> dict[str, Any]:
+    try:
+        magnitude_limit = float(magnitude_error_db)
+        phase_limit = float(phase_error_deg)
+    except (TypeError, ValueError):
+        magnitude_limit = math.nan
+        phase_limit = math.nan
+    if not math.isfinite(magnitude_limit) or magnitude_limit < 0:
+        return {
+            "ok": False,
+            "error": "幅值误差上限必须是非负有限数值。",
+            "markdown": "⚠️ 幅值误差上限必须是非负有限数值。",
+            "graph_html": "",
+        }
+    if not math.isfinite(phase_limit) or phase_limit < 0:
+        return {
+            "ok": False,
+            "error": "相位误差上限必须是非负有限数值。",
+            "markdown": "⚠️ 相位误差上限必须是非负有限数值。",
+            "graph_html": "",
+        }
+
     _ensure_sfg_path()
     try:
         from sfg_prototype.pipeline import SimplificationConfig, simplify_netlist
@@ -162,14 +207,10 @@ def run_sfg_symbolic_simplification(
         }
 
     substitutions = _build_substitutions(param_df_data)
-    relative_limit = float(relative_error_pct)
-    if relative_limit > 1:
-        relative_limit /= 100.0
     config = SimplificationConfig(
-        error_norm="hybrid_linf",
-        total_error_budget=relative_limit,
-        magnitude_error_db=float(magnitude_error_db),
-        phase_error_deg=float(phase_error_deg),
+        error_norm="bode_linf",
+        magnitude_error_db=magnitude_limit,
+        phase_error_deg=phase_limit,
         max_steps_per_subrange=int(max_steps_per_subrange),
     )
     if start_f is not None and stop_f is not None:
@@ -204,9 +245,15 @@ def run_sfg_symbolic_simplification(
 
     reference = result.pipeline.reference
     reference_title = "circuit.cir"
-    final_error = result.final_error
-    status_text = "通过" if final_error.accepted else "未通过"
-    status_class = "color:#1f7a3f;font-weight:600;" if final_error.accepted else "color:#a12622;font-weight:600;"
+    selected_errors = [_selected_subrange_error(item) for item in result.subrange_results if item.transfer.success]
+    all_subranges_succeeded = bool(result.subrange_results) and all(item.transfer.success for item in result.subrange_results)
+    overall_accepted = all_subranges_succeeded and all(
+        _passes_bode_limits(error, magnitude_limit, phase_limit) for error in selected_errors
+    )
+    max_magnitude_error = max((float(error.max_magnitude_error_db) for error in selected_errors), default=math.inf)
+    max_phase_error = max((float(error.max_phase_error_deg) for error in selected_errors), default=math.inf)
+    status_text = "通过" if overall_accepted else "未通过"
+    status_class = "color:#1f7a3f;font-weight:600;" if overall_accepted else "color:#a12622;font-weight:600;"
 
     parts: list[str] = []
     parts.append("## SFG 符号化简结果")
@@ -216,10 +263,10 @@ def run_sfg_symbolic_simplification(
     parts.append(f"- 完整参考传递函数: {_latex_inline(reference.laplace)}")
     parts.append(
         f"- 整体误差验收: <span style='{status_class}'>{status_text}</span>"
-        f" (相对 {final_error.max_relative_error:.3g}, 幅值 {final_error.max_magnitude_error_db:.3g} dB, 相位 {final_error.max_phase_error_deg:.3g}°)"
+        f" (最大幅值 {max_magnitude_error:.3g} dB, 最大相位 {max_phase_error:.3g}°)"
     )
     parts.append(
-        f"- 误差上限: 相对 {relative_limit:.3g}, 幅值 {float(magnitude_error_db):.3g} dB, 相位 {float(phase_error_deg):.3g}°"
+        f"- 误差上限: 幅值 {magnitude_limit:.3g} dB, 相位 {phase_limit:.3g}°"
     )
 
     if result.pipeline.clusters:
@@ -244,17 +291,19 @@ def run_sfg_symbolic_simplification(
             lower = _format_frequency(item.lower_frequency_hz)
             parts.append(f"### 频段 {item.cluster_index}: {lower} - {upper}")
             if item.transfer.success:
-                chosen = item.dominant_term_transfer.transfer if item.dominant_term_transfer is not None else item.transfer.transfer
+                dominant = item.dominant_term_transfer
+                chosen = dominant.transfer if dominant is not None else item.transfer.transfer
+                error = _selected_subrange_error(item)
                 parts.append(f"- 推荐简化传递函数: {_latex_inline(chosen)}")
-                parts.append(_root_table("极点", item.transfer.poles))
+                parts.append(_target_root_table(tuple(item.target_root_approximations)))
                 parts.append("")
-                parts.append(_root_table("零点", item.transfer.zeros))
-                parts.append("")
-                parts.append(f"- 主导元件参数: {_parameter_summary(item.dominant_term_transfer)}")
-                error = item.error
                 parts.append(
-                    f"- 误差验收: {'通过' if error.accepted else '未通过'}"
-                    f" (相对 {error.max_relative_error:.3g}, 幅值 {error.max_magnitude_error_db:.3g} dB, 相位 {error.max_phase_error_deg:.3g}°)"
+                    "- 说明: 根位置偏差仅用于诊断符号近似；频段是否通过只由推荐传递函数的整体幅值和相位误差决定。"
+                )
+                parts.append(f"- 主导元件参数: {_parameter_summary(dominant)}")
+                parts.append(
+                    f"- 误差验收: {'通过' if _passes_bode_limits(error, magnitude_limit, phase_limit) else '未通过'}"
+                    f" (幅值 {error.max_magnitude_error_db:.3g} dB, 相位 {error.max_phase_error_deg:.3g}°)"
                 )
             else:
                 parts.append(f"- 推荐简化传递函数: 失败，{html.escape(str(item.transfer.error))}")

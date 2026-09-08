@@ -28,14 +28,14 @@ LaplaceResult = sl.doLaplace(cir, pardefs="circuit", numeric=True)
 
 # 1. 绘制并保存幅度图
 f_dBm = sl.plotSweep("f_dBm", "dB Magnitude plot", LaplaceResult, start_f, stop_f, points,
-                     sweepScale="M", yUnits="V", funcType="dBmag")
+                     sweepScale="", yUnits="V", funcType="dBmag")
 # 使用 plt.savefig 代替 f_dBm.savefig
 plt.savefig("./img/f_dBm.png", dpi=300, bbox_inches="tight")
 plt.close('all')  # 【极其重要】画完马上关掉当前画板，防止后面的相位图跟幅度图重叠！
 
 # 2. 绘制并保存相位图
 f_phs = sl.plotSweep("f_phs", "Phase plot", LaplaceResult, start_f, stop_f, points,
-                     sweepScale="M", yUnits="V", funcType="phase")
+                     sweepScale="", yUnits="V", funcType="phase")
 plt.savefig("./img/f_phs.png", dpi=300, bbox_inches="tight")
 plt.close('all')  # 同样关闭画板
 
